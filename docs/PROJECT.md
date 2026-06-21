@@ -1,266 +1,271 @@
 # Project Profile
 
-Status: bot-first template
+Status: MVP implementation scaffolded locally
 
 This file is tracked in git and defines the project-specific operating profile for Codex. Owner-facing communication stays in Russian; repository documentation is written in English unless the owner says otherwise.
 
-Default use: Telegram/backend bot projects. `AGENTS.md` is shared across project types. For web projects, copy `docs/WEB_PROJECT.md` into this file before implementation, then remove or mark inactive profile files so only one project profile guides the work.
+Shorter is a standalone Telegram-admin link shortener. Admins paste many source URLs into the bot, review a parsed preview, confirm creation, and then manage/search/export short links. Public HTTP traffic resolves `BASE_URL/<code>` and redirects to the stored original URL.
 
-## Product Intake
+## References
 
-Before implementation, fill these facts:
-- profile choice from `docs/START_PROJECT_CHECKLIST.md`;
-- product goal and primary user-visible scenario;
-- bot roles, user roles, and access rules;
-- main screens, commands, and expected user inputs;
-- data entities and ownership boundaries;
-- owner admin-platform integration needs: managed entities, private admin commands, audit/events, and rollout priority;
-- external APIs and their source documentation;
-- deployment target, domain/webhook needs, and server constraints;
-- acceptance gates for the first usable version.
+- `taxasya` is a read-only local reference for Telegram bot UX, PostgreSQL-backed short links, Docker Compose, Makefile deploy flow, and bot UI conventions.
+- Use only UX/runtime patterns from the reference. Do not copy Pampadu-specific user, offer, public self-service, or tracking-link logic.
+- Reference projects are read-only sources. Do not copy secrets from them or from chat into tracked files.
+
+## Product
+
+- Primary operator: Telegram admin from `ADMIN_USER_IDS`.
+- Public user: anyone opening a short URL in a browser.
+- Admin-visible result: short links are created from pasted URL batches and can be viewed, searched, exported, disabled, re-enabled, and deleted from Telegram.
+- Public result: active short links redirect with HTTP `302`; disabled, deleted, or unknown codes return `404`.
+- Out of scope for MVP: web admin panel, Telegram public-user mode, Taxasya integration, roles beyond admin whitelist, custom code editing, analytics dashboards, hard delete from PostgreSQL.
 
 ## Stack
 
 - Language: Go.
 - Database: PostgreSQL.
-- Runtime: Docker Compose.
-- Default services: backend, Telegram bot, optional admin bot, PostgreSQL.
-- Default service style: backend services with explicit boundaries, migrations, tests, and observable runtime behavior.
-- Default local release flow: `git add`, `git commit`, `git push`, `make push`.
-- Default server update flow: `git pull --ff-only`, then `make pull`.
-- Default registry namespace: `DOCKERHUB_USER=ghcr.io/tuicli`.
-- Default image tag: current git short SHA, also publish `latest`.
-- Server must not build source code during normal deploy; it pulls already built images.
-- Add project-specific frameworks, APIs, queues, caches, and deployment details here after the project is created.
+- Telegram Bot API library: `gopkg.in/telebot.v3`, following the Taxasya reference unless implementation finds a stronger reason to change.
+- Runtime: Docker Compose on one server.
+- Services: `bot`, `backend`, `migrate`, `postgres`.
+- Service style: small modular monolith split into bot, application, domain, storage, config, and HTTP redirect packages.
+- Config: environment variables for secrets and runtime values.
+- Short-link shape: `BASE_URL/<code>`.
+- Code generation: random URL-safe alphanumeric code, initially 8 characters, unique in PostgreSQL.
 
 ## Architecture
 
-Default target: clean, modular, layered architecture with high scaling potential.
+Default target: clean, modular, layered architecture without unnecessary framework weight.
 
-Preferred direction:
-- domain/business rules do not depend on transport, storage, frameworks, or external APIs;
-- handlers/controllers translate input and output only;
-- application services coordinate use cases and transactions;
-- repositories own persistence details;
-- clients/adapters own external systems;
-- background workers have explicit ownership, limits, retries, and observability;
-- modules expose narrow contracts and avoid shared mutable state;
-- projects that may be managed from the shared owner admin platform expose explicit private admin contracts;
-- admin contracts describe capabilities first, then concrete commands, so unknown future admin scenarios do not block the MVP.
+Expected module map:
+- `cmd/bot`: Telegram bot entry point.
+- `cmd/backend`: HTTP redirect backend.
+- `cmd/migrate`: migration runner, if not handled inside service startup.
+- `internal/bot`: Telegram handlers, keyboards, callback routing, UI manager, and FSM/listener states.
+- `internal/app`: use cases for parsing input, previewing batches, creating short links, listing/searching links, disabling/enabling/deleting links, and CSV export.
+- `internal/domain`: short links, parsed input rows, validation rules, status values, and code generation policy.
+- `internal/storage/postgres`: SQL repositories and migrations.
+- `internal/config`: environment parsing and validation.
+- `migrations`: SQL migrations.
+- `scripts`: local validation and utility scripts.
+- `docs`: project profile and working docs.
 
 Avoid:
 - business logic hidden inside HTTP/bot handlers;
-- direct SQL or external API calls scattered across unrelated packages;
-- direct owner admin-platform writes into project databases for business actions;
-- direct browser calls to project admin endpoints;
-- copied full admin panels per project when the shared owner admin platform is the intended operator UI;
-- cyclic dependencies between modules;
-- global state for request-specific behavior;
-- abstractions created before there is a real second use case or real complexity to remove.
+- direct SQL scattered through bot or HTTP packages;
+- public browser admin endpoints;
+- shared mutable bot state without explicit TTL;
+- Taxasya/Pampadu-specific entities in this project.
 
-Default layout:
-- `cmd/backend`: backend entry point, migrations, HTTP/gRPC server, background workers;
-- `cmd/bot`: user Telegram bot entry point;
-- `cmd/admin-bot`: admin Telegram bot entry point, when needed;
-- `api/admin/v1`: private admin contract definitions, when the project is managed by the shared owner admin platform;
-- `internal/domain`: business entities, policies, and pure rules;
-- `internal/app`: use cases and application services;
-- `internal/bot`: Telegram routing, UI, state, middleware, keyboards;
-- `internal/storage/postgres`: PostgreSQL repositories and migration integration;
-- `internal/config`: environment parsing and validation;
-- `migrations`: SQL migrations;
-- `configs`: runtime config files;
-- `docs`: project profile and working docs.
+## Data Model
 
-## Owner Admin Platform Integration
+Planned tables:
+- `short_links`: one row per unique original URL.
+- `link_events`: lightweight audit/events for creation, duplicate preview, enable, disable, delete, and export actions.
+- `short_link_clicks`: deferred unless click tracking is enabled during implementation.
 
-Use this section only when the project should be managed from the shared owner admin platform. See `docs/ADMIN_PLATFORM_HANDSHAKE.md` for the reusable contract standard.
+`short_links` fields:
+- `id BIGSERIAL PRIMARY KEY`
+- `code TEXT NOT NULL UNIQUE`
+- `original_url TEXT NOT NULL UNIQUE`
+- `title TEXT NOT NULL`
+- `status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'deleted'))`
+- `created_by_telegram_id BIGINT NOT NULL`
+- `updated_by_telegram_id BIGINT`
+- `disabled_at TIMESTAMPTZ`
+- `disabled_by_telegram_id BIGINT`
+- `deleted_at TIMESTAMPTZ`
+- `deleted_by_telegram_id BIGINT`
+- `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
+- `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`
 
-Target boundary:
-- browser traffic goes to the shared admin platform, not directly to this project;
-- the shared admin platform owns operator UI, GitHub/login policy, shared permissions, shared workflows, and admin audit;
-- this project owns its business rules and exposes explicit private admin commands;
-- this project validates admin-platform calls before executing any admin command;
-- the admin platform must not write directly into this project's database for business actions.
+Input parsing:
+- Extract only the first HTTP/HTTPS URL from each input line.
+- Ignore a leading list number such as `21.`.
+- Text after the extracted URL becomes the title after trimming separators and whitespace.
+- If no title remains, derive a short title from the URL host/path.
+- Lines without URLs are reported in preview and are not written.
 
-Default first transport:
-- same-server Docker Compose private network with internal HTTP/JSON;
-- do not expose project admin endpoints as public browser APIs;
-- keep transport replaceable so later deployments can move to private HTTPS, VPN/WireGuard/Tailscale, mTLS, or gRPC without changing the operator UI.
+Duplicate policy:
+- Duplicate `original_url` is not inserted again, regardless of existing link status.
+- Preview must show duplicates separately, including the existing short URL and status, and explain that the row will be skipped.
+- Duplicate `code` during random generation is an internal retry; after retry budget is exhausted, return a short admin-facing error.
+- Existing code and original URL are not reused or regenerated in MVP, even after soft deletion.
 
-Minimum private admin contract:
-- `GET /admin/v1/health`: service availability;
-- `GET /admin/v1/capabilities`: supported admin resources, actions, and optional UI hints;
-- resource reads needed by the MVP, such as users, orders, campaigns, or settings;
-- explicit command endpoints for business actions, such as grant/revoke flags, block/unblock, resend, recalculate, or enqueue delivery;
-- event/timeline reads for project events and user events;
-- job create/status endpoints for long-running operations.
+## Bot UX
 
-Contract rules:
-- start with capabilities and the smallest real MVP commands;
-- record deferred commands instead of guessing future buttons;
-- every mutating command must have authorization, audit intent, input validation, timeout, and observable success/failure result;
-- long-running commands return a job ID and expose status;
-- never log secrets, tokens, raw private payloads, or admin auth material.
+Access:
+- Admin whitelist comes from `ADMIN_USER_IDS`.
+- Non-admin users receive no response by default.
+- Private chat is the expected admin surface.
+
+Main menu:
+- `➕ Добавить ссылки`
+- `🔎 Найти`
+- `🕘 Последние`
+- `⬇️ CSV`
+
+Add links flow:
+1. Admin presses `➕ Добавить ссылки`.
+2. Bot asks for a text block with one or more URLs.
+3. Bot parses input and shows a preview before any write.
+4. Preview groups valid new links, duplicate existing links, and invalid lines.
+5. Admin presses `✔️ Подтвердить` or `✖️ Отмена`.
+6. Bot creates only new links and returns a result summary plus the created short URLs.
+
+List/search flow:
+- Latest links are ordered newest first.
+- Search uses one input field and matches code, title, or original URL.
+- Results are paginated with 10 links per page.
+- Default lists and search show `active` and `disabled` links. `deleted` links are hidden from normal lists unless a later explicit filter is added.
+- Link buttons use this label shape: `<short title> - <short_url>`.
+- Button title part is capped for compact Telegram display. If the title is longer than 7 visible characters, show the first 6 characters plus `..`.
+- Link detail shows title, code, short URL, original URL, status, created time, and admin actions.
+- Active link detail supports `⏸ Выключить` and `✖️ Удалить`.
+- Disabled link detail supports `▶️ Включить` and `✖️ Удалить`.
+- Delete is a soft delete: set `status='deleted'`, record deletion metadata, hide from default bot lists, and make the public short URL return `404`.
+
+Bot UI conventions:
+- Keep one current UI message per admin/chat when practical.
+- Callback navigation edits the clicked message.
+- Text input flows use explicit FSM/listener state with TTL and support cancel.
+- Confirmation screens show exactly what will be written before writing.
+- Always acknowledge callbacks once.
+- Ignore `message is not modified` as a user-visible error.
+- Telegram messages use HTML escaping and no link previews by default.
+- Use `◀️ Назад`, `✖️ Отмена`, `✔️ Подтвердить`, `🔄 Обновить`.
+- Use hollow arrows `◁` and `▷` plus a no-op page indicator for pagination.
+
+## HTTP Redirect
+
+- `GET /healthz` returns service health.
+- `GET /<code>` resolves active short links and redirects with `302`.
+- Unknown, invalid, disabled, or deleted codes return `404`.
+- Codes should be constrained to URL-safe alphanumeric characters.
+- Redirect handler must not expose internal errors or database details.
+- Request logs should include code, result, HTTP status, elapsed time, and a request/correlation id when available.
+
+## Export And Dumps
+
+Telegram CSV export:
+- Admin can request CSV from the bot.
+- CSV includes at least `code`, `short_url`, `original_url`, `title`, `status`, `created_at`.
+- CSV export must stream or cap safely if the table grows; exact limit is implementation-defined and recorded before release.
+
+PostgreSQL dumps:
+- Runtime must support standard PostgreSQL access through Docker Compose and env credentials.
+- Backup/restore scripts are expected from the owner and should rely on documented PostgreSQL env names, not hard-coded credentials.
+- Do not print database passwords in docs, logs, or diagnostic `comm`.
+
+Useful dump queries:
+
+```sql
+SELECT code, original_url, title, status, created_at
+FROM short_links
+ORDER BY id;
+```
+
+```sql
+SELECT code, original_url, title, status, created_at
+FROM short_links
+WHERE status = 'active'
+ORDER BY id;
+```
+
+## Runtime Env
+
+Required planned env:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=change-me
+ADMIN_USER_IDS=123456789,987654321
+BASE_URL=https://short.example.com
+DATABASE_URL=postgres://shorter:change-me@postgres:5432/shorter?sslmode=disable
+POSTGRES_DB=shorter
+POSTGRES_USER=shorter
+POSTGRES_PASSWORD=change-me
+BACKEND_HTTP_ADDR=:8080
+BOT_POLL_TIMEOUT_SECONDS=30
+MIGRATIONS_DIR=/app/migrations
+DOCKERHUB_USER=ghcr.io/tuicli
+```
+
+Optional planned env:
+
+```dotenv
+CODE_LENGTH=8
+ADD_LINKS_MAX_LINES=200
+LINKS_PAGE_SIZE=10
+CSV_EXPORT_MAX_ROWS=10000
+```
 
 ## Development Rules
 
-- Start from the user-visible behavior or operational goal.
+- Start from the user-visible Telegram behavior or public redirect behavior.
 - Confirm current behavior in code, docs, logs, or owner-provided facts before changing it.
 - Keep each change tied to a measurable result.
 - Prefer small, reversible steps.
-- Add tests around business rules, data boundaries, and regressions.
+- Add tests around parsing, duplicate detection, code generation collision handling, search, CSV export, and redirect resolution.
 - Add logs/traces when a scenario cannot be diagnosed from existing signals.
-- For new projects, write the first working docs before implementation.
-- For large changes, write a decision/change doc first, then implement, then verify docs against code.
-- Local runtime is not assumed. Prefer unit tests and Docker image builds locally; live Telegram/API checks happen on the server or staging when approved.
-- Do not add GitHub MCP context unless the owner explicitly asks for PR, issue, review, or CI work.
+- Local runtime is not assumed. Prefer unit tests and Docker image builds locally; live Telegram and public-domain checks happen on the server after deploy unless the owner explicitly asks for a local probe.
+- Do not commit `.env`, Telegram tokens, database passwords, dumps, logs, or raw production data.
 
 ## Deployment
 
-Canonical Make targets to keep or adapt:
-- `make test`: check migrations and run Go tests;
-- `make check-migrations`: validate SQL migration numbering and up/down pairs;
-- `make build`: build deployable Docker images;
-- `make push`: require clean worktree, build images, push `<image>:<sha>` and `<image>:latest`;
-- `make pull`: server-side `git pull --ff-only`, pull images by current short SHA, start services with `--no-build`;
-- `make deploy-tag tag=<sha|latest>`: rollback or explicit deploy;
+Canonical Make targets to implement:
+- `make test`: check migrations and run Go tests.
+- `make check-migrations`: validate SQL migration numbering and up/down pairs.
+- `make migrate`: apply migrations through Docker Compose.
+- `make build`: build deployable Docker images.
+- `make push`: require clean worktree, build images, push `<image>:<sha>` and `<image>:latest`.
+- `make pull`: server-side deploy from the current checkout: pull images by current short SHA, run migrations, start services with `--no-build`. It does not run `git pull`.
 - `make logs service=<name>` and `make ps`: operational checks.
 
 Deployment invariants:
-- `.env` is outside git and contains secrets plus `DOCKERHUB_USER=ghcr.io/tuicli`;
-- env/config examples in docs, chat, and diagnostic notes must be fenced as `dotenv` or shell-style code blocks so keys are visually distinct from values;
-- compose uses PostgreSQL as a service and persistent named volumes;
-- production/staging must have isolated `.env`, container names or compose project names, databases, volumes, bot tokens, and ports;
-- migrations run automatically at backend start or through one documented command;
-- `make pull` should verify that running containers use the expected image tag when practical.
+- `.env` is outside git and contains secrets plus `DOCKERHUB_USER=ghcr.io/tuicli`.
+- First server install flow: owner runs `git clone`, fills `.env`, then runs `make pull`.
+- Later server update flow: owner runs `git pull --ff-only`, then `make pull`.
+- Compose uses PostgreSQL as a service and persistent named volumes.
+- Production/staging must have isolated `.env`, compose project names, databases, volumes, bot tokens, and ports.
+- Server must not build source code during normal deploy; it pulls already built images.
+- Public HTTPS termination can be handled by nginx or another server proxy in front of `backend`.
 
-## Bot Archetypes
+## Owner Admin Platform
 
-Use this section for the default bot-first project.
-
-Reference sources in this template workspace:
-- `../bladogram`: main bot/runtime/deploy reference;
-- `PINGO/docs/04-bot-ux-reference.md`: compact bot UX reference;
-- `PINGO/internal/bot/ui`: reusable shape for UI manager/tracker;
-- `PINGO/internal/bot/safehtml`: safe HTML escaping helpers.
-
-Package direction:
-- handlers translate Telegram updates into use cases and render screens;
-- state store owns FSM state, TTL, and per-user/per-chat data;
-- UI manager owns send/edit/upsert/delete behavior for the current UI message;
-- keyboards package owns callback IDs and reusable button builders;
-- middleware owns auth/access guard, callback ack tracking, logging, and update scope;
-- app services own business scenarios;
-- repositories own persistence.
-
-Bot UX invariants:
-- keep one current UI message per user/chat when practical;
-- command or text input sends a new UI message and replaces the previous UI message;
-- callback navigation edits the clicked message;
-- if edit fails because Telegram cannot change message type, fallback to delete and send;
-- ignore `message is not modified` as a user-visible error;
-- always acknowledge callbacks once;
-- text/file input must be routed through explicit FSM state;
-- state must have TTL;
-- input states must be marked so notifications or background pushes do not hijack the flow;
-- `Back` uses explicit back target and optional entity/page id, not implicit stack magic;
-- message deletion is best-effort and must not break the scenario;
-- do not delete user messages by default; do it only for an explicitly documented scenario.
-
-Bot copy and controls:
-- screen title repeats the button emoji and name, uses bold formatting where Telegram HTML is used, then one blank line;
-- major semantic blocks are separated by one blank line;
-- dense cards use short label/value lines;
-- user-facing errors are short, non-technical, and tell the next action;
-- do not over-explain interface mechanics: the button label carries the action, and the message carries only the context needed to recognize the object and choose the action;
-- do not mention standard workflow consequences such as notifications, status changes, or what happens after pressing a button, unless the consequence changes the user's decision;
-- default action buttons prefer monochrome symbols over colored status emoji: `◀️ Назад`, `✖️ Отмена`, `👌 Понятно`, `✔️ Подтвердить`, `🔄 Обновить`;
-- use `✔️`/`✖️` as the default action-button markers instead of `✅`/`❌`; colored status emoji remain acceptable inside message text when they represent state, not button styling;
-- use semantic button styles when the Telegram client/API/library supports them: `success` / green for positive actions, `danger` / red for destructive or negative actions, `primary` / blue only for the main call to action;
-- do not use transparent/unstyled buttons with text; transparent/unstyled buttons are only acceptable for pagination or other icon-only controls without text labels;
-- omit button style only for pagination or other icon-only controls without text labels;
-- pagination uses stable hollow arrow buttons such as `◁` and `▷` plus a no-op page indicator; vertical reordering uses `△` and `▽`;
-- no-op buttons only acknowledge the callback and do not change the screen.
-
-Copy example:
-- Bad: `Second participant will receive a notification about early timer closing.`
-- Good: show only the action, loan, date, and worker.
-
-Runtime rules:
-- background workers have explicit limits, retry budget, context cancellation, and logs;
-- external API calls have timeouts, typed errors, and no secret logging;
-- long operations immediately show a waiting state or callback toast;
-- each observable scenario should show ingress, handler/service, internal calls, external calls, and result.
-
-Examples to add:
-- final menu map;
-- final button labels;
-- input validation rules;
-- notification behavior;
-- admin/user role model;
-- production diagnostic commands.
-
-Anti-examples to add:
-- business logic in handlers;
-- unbounded goroutines per update;
-- hidden cross-chat global state;
-- mixed UI text, persistence, and external calls in one function;
-- retry loops without limits, context, or logs.
-
-## Documentation
-
-- `docs/PROJECT.md` is tracked and should stay compact.
-- `docs/WEB_PROJECT.md` is the separate web-project profile; it is inactive unless the owner starts a web project or explicitly selects it.
-- Numbered docs like `docs/01-topic.md` are Codex working docs and are ignored by git by default.
-- Numbered docs should be English because they are mostly written by Codex for Codex.
-- Every working doc must include `## Checklist`.
-- Working docs should record target behavior, boundaries, risks, checks, open questions, and a checklist.
-- If a fact is unknown, mark it as an open question instead of inventing a default.
+- Not part of MVP.
+- This project is operated through the Telegram admin bot.
+- If owner admin platform integration is requested later, add a private admin contract before exposing browser admin actions.
 
 ## Checks
 
-- Default: `make test` or `go test ./...`.
+- Default before commit after code exists: `make test`.
+- Fallback: `go test ./...`.
 - Migrations: `make check-migrations`.
 - Docker release: `make push`.
 - Server deploy: `make pull`.
-- Rollback: `make deploy-tag tag=<sha|latest>`.
-- If protobuf or generated contracts change: run and document the project generation command.
-- If local smoke is relevant: `make up`, `make logs`, `make down`.
-
-## Examples
-
-- Preferred env example format:
-  ```dotenv
-  POSTGRES_DB=admin_platform_db
-  POSTGRES_USER=admin_platform_user
-  POSTGRES_PASSWORD=change-me
-  ```
-- Bladogram-like deploy flow:
-  - local: `git add`, `git commit`, `git push`, `make push`;
-  - server: `git pull --ff-only`, `make pull`.
-- Default `.env` registry line: `DOCKERHUB_USER=ghcr.io/tuicli`.
-- Bot UI reference: one current interactive message, callback edit, input flow through FSM, explicit back targets.
-
-## Anti-Examples
-
-Add project-specific anti-examples here.
+- Live checks after deploy: Telegram admin add/search/disable/enable/delete/export flow and public redirect by one created short URL.
 
 ## Open Questions
 
-- [ ] Fill in the actual service/module map after the project is initialized.
-- [ ] Fill in exact Make targets after project files are generated.
-- [ ] Fill in bot role/access model.
-- [ ] Fill in menu map and user-visible copy.
-- [ ] Fill in production/staging topology.
-- [ ] Fill in owner admin-platform integration decision and private contract, when relevant.
+- [ ] Confirm final production domain value for `BASE_URL`.
+- [ ] Confirm final backup script shape after the owner provides the dump reference.
+- [ ] Confirm whether click tracking is needed in MVP; current target keeps it deferred.
 
 ## Checklist
 
-- [x] Default stack recorded.
+- [x] Active profile selected as Telegram/backend bot-first.
+- [x] Product purpose recorded.
+- [x] Taxasya reference boundary recorded.
+- [x] Stack recorded.
 - [x] Architecture direction recorded.
-- [x] Bot-first profile recorded.
-- [x] Deploy flow recorded.
-- [x] Bot UX invariants recorded.
-- [x] Documentation policy recorded.
-- [x] Owner admin-platform integration policy recorded.
+- [x] Main bot UX recorded.
+- [x] Parsing and duplicate policy recorded.
+- [x] Data model recorded.
+- [x] Link status lifecycle recorded.
+- [x] Public redirect behavior recorded.
+- [x] Export and dump expectations recorded.
+- [x] Runtime env names recorded.
+- [x] Deployment target recorded.
+- [x] Owner admin platform decision recorded.
+- [x] MVP code scaffold implemented.
+- [x] Local `make test` passed.
+- [x] Local `docker compose config` passed without checked-in secrets.

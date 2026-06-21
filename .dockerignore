@@ -1,0 +1,11 @@
+.git
+.codex
+.agents
+.env
+.env.*
+!.env.example
+bin
+tmp
+docs.zip
+comm
+taxasya

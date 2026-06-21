@@ -1,8 +1,8 @@
 # AGENTS
 
-Last updated: 2026-06-04
+Last updated: 2026-06-21
 
-Purpose: compact, reusable operating rules for Codex in this repository template.
+Purpose: compact operating rules for Codex in this repository.
 
 ## 0) Language And Brevity
 
