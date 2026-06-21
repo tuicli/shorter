@@ -194,8 +194,8 @@ func (r *Repository) ExportLinks(ctx context.Context, limit int) ([]domain.Short
 func (r *Repository) RecordEvent(ctx context.Context, event app.Event) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO link_events (short_link_id, event_type, actor_telegram_id, metadata)
-		VALUES (NULLIF($1, 0), $2, NULLIF($3, 0), COALESCE(NULLIF($4, ''), '{}')::jsonb)
-	`, event.ShortLinkID, event.EventType, event.ActorTelegramID, event.Metadata)
+		VALUES ($1, $2, $3, COALESCE(NULLIF($4, ''), '{}')::jsonb)
+	`, nullableID(event.ShortLinkID), event.EventType, nullableID(event.ActorTelegramID), event.Metadata)
 	if err != nil {
 		return fmt.Errorf("record link event: %w", err)
 	}
@@ -313,12 +313,19 @@ func scanLink(row scanner) (domain.ShortLink, error) {
 func insertEvent(ctx context.Context, tx *sql.Tx, event app.Event) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO link_events (short_link_id, event_type, actor_telegram_id, metadata)
-		VALUES (NULLIF($1, 0), $2, NULLIF($3, 0), COALESCE(NULLIF($4, ''), '{}')::jsonb)
-	`, event.ShortLinkID, event.EventType, event.ActorTelegramID, event.Metadata)
+		VALUES ($1, $2, $3, COALESCE(NULLIF($4, ''), '{}')::jsonb)
+	`, nullableID(event.ShortLinkID), event.EventType, nullableID(event.ActorTelegramID), event.Metadata)
 	if err != nil {
 		return fmt.Errorf("insert link event: %w", err)
 	}
 	return nil
+}
+
+func nullableID(id int64) sql.NullInt64 {
+	if id == 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: id, Valid: true}
 }
 
 func rollback(tx *sql.Tx) {
