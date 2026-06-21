@@ -21,8 +21,8 @@ var ErrMissingToken = errors.New("telegram bot token is empty")
 type LinkService interface {
 	PreviewBulkLinks(ctx context.Context, text string) (app.BulkPreview, error)
 	CreateBulkLinks(ctx context.Context, adminID int64, preview app.BulkPreview) (app.CreateBulkResult, error)
-	ListLatestLinks(ctx context.Context, page int) (app.LinkPage, error)
-	SearchLinks(ctx context.Context, query string, page int) (app.LinkPage, error)
+	ListLatestLinks(ctx context.Context, page int, sort app.LinkSort) (app.LinkPage, error)
+	SearchLinks(ctx context.Context, query string, page int, sort app.LinkSort) (app.LinkPage, error)
 	GetLink(ctx context.Context, id int64) (app.LinkView, bool, error)
 	DisableLink(ctx context.Context, id int64, adminID int64) (app.LinkView, bool, error)
 	EnableLink(ctx context.Context, id int64, adminID int64) (app.LinkView, bool, error)
@@ -233,7 +233,7 @@ func (b *Bot) handleSearchText(c tele.Context) error {
 		Kind:  stateSearchResults,
 		Query: query,
 	})
-	return b.showSearchPage(c, query, 1)
+	return b.showSearchPage(c, query, 1, app.LinkSortTime)
 }
 
 func (b *Bot) handleSearchPage(c tele.Context) error {
@@ -242,14 +242,15 @@ func (b *Bot) handleSearchPage(c tele.Context) error {
 		b.states.set(contextKey(c), stateEntry{Kind: stateSearchInput})
 		return b.upsert(c, renderSearchPrompt(), cancelKeyboard())
 	}
-	return b.showSearchPage(c, entry.Query, parsePage(c.Data()))
+	page := parseListPage(c.Data())
+	return b.showSearchPage(c, entry.Query, page.Page, page.Sort)
 }
 
-func (b *Bot) showSearchPage(c tele.Context, query string, page int) error {
+func (b *Bot) showSearchPage(c tele.Context, query string, page int, sort app.LinkSort) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	result, err := b.service.SearchLinks(ctx, query, page)
+	result, err := b.service.SearchLinks(ctx, query, page, sort)
 	if err != nil {
 		b.logger.Error("search links failed", "error", err, "sender_id", c.Sender().ID)
 		return b.upsert(c, "Не получилось найти ссылки. Попробуй позже.", mainMenu())
@@ -259,14 +260,15 @@ func (b *Bot) showSearchPage(c tele.Context, query string, page int) error {
 }
 
 func (b *Bot) handleLatest(c tele.Context) error {
-	return b.showLatest(c, parsePage(c.Data()))
+	page := parseListPage(c.Data())
+	return b.showLatest(c, page.Page, page.Sort)
 }
 
-func (b *Bot) showLatest(c tele.Context, page int) error {
+func (b *Bot) showLatest(c tele.Context, page int, sort app.LinkSort) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	result, err := b.service.ListLatestLinks(ctx, page)
+	result, err := b.service.ListLatestLinks(ctx, page, sort)
 	if err != nil {
 		b.logger.Error("list latest links failed", "error", err, "sender_id", c.Sender().ID)
 		return b.upsert(c, "Не получилось открыть последние ссылки. Попробуй позже.", mainMenu())
@@ -276,11 +278,11 @@ func (b *Bot) showLatest(c tele.Context, page int) error {
 }
 
 func (b *Bot) handleOpen(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
-	return b.showLink(c, id, source, page)
+	id, source, page, sort := parseLinkContext(c.Data())
+	return b.showLink(c, id, source, page, sort)
 }
 
-func (b *Bot) showLink(c tele.Context, id int64, source string, page int) error {
+func (b *Bot) showLink(c tele.Context, id int64, source string, page int, sort app.LinkSort) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -290,65 +292,82 @@ func (b *Bot) showLink(c tele.Context, id int64, source string, page int) error 
 		return b.upsert(c, "Не получилось открыть ссылку. Попробуй позже.", mainMenu())
 	}
 	if !ok {
-		return b.upsert(c, renderNotFound(), listBackKeyboard(source, page))
+		return b.upsert(c, renderNotFound(), listBackKeyboard(source, page, sort))
 	}
-	return b.upsert(c, renderDetail(item), detailKeyboard(item, source, page))
+	return b.upsert(c, renderDetail(item), detailKeyboard(item, source, page, sort))
 }
 
 func (b *Bot) handleDisableConfirm(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
+	id, source, page, sort := parseLinkContext(c.Data())
 	item, ok, err := b.getItemForAction(c, id)
 	if err != nil || !ok {
-		return b.actionReadError(c, err, source, page)
+		return b.actionReadError(c, err, source, page, sort)
 	}
-	return b.upsert(c, renderDisableConfirm(item), confirmActionKeyboard("⏸ Выключить", btnDisableOK, formatLinkContext(id, source, page)))
+	return b.upsert(
+		c,
+		renderDisableConfirm(item),
+		confirmActionKeyboard("⏸ Выключить", btnDisableOK, formatLinkContext(id, source, page, sort)),
+	)
 }
 
 func (b *Bot) handleEnableConfirm(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
+	id, source, page, sort := parseLinkContext(c.Data())
 	item, ok, err := b.getItemForAction(c, id)
 	if err != nil || !ok {
-		return b.actionReadError(c, err, source, page)
+		return b.actionReadError(c, err, source, page, sort)
 	}
-	return b.upsert(c, renderEnableConfirm(item), confirmActionKeyboard("▶️ Включить", btnEnableOK, formatLinkContext(id, source, page)))
+	return b.upsert(
+		c,
+		renderEnableConfirm(item),
+		confirmActionKeyboard("▶️ Включить", btnEnableOK, formatLinkContext(id, source, page, sort)),
+	)
 }
 
 func (b *Bot) handleDeleteConfirm(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
+	id, source, page, sort := parseLinkContext(c.Data())
 	item, ok, err := b.getItemForAction(c, id)
 	if err != nil || !ok {
-		return b.actionReadError(c, err, source, page)
+		return b.actionReadError(c, err, source, page, sort)
 	}
-	return b.upsert(c, renderDeleteConfirm(item), confirmActionKeyboard("✖️ Удалить", btnDeleteOK, formatLinkContext(id, source, page)))
+	return b.upsert(
+		c,
+		renderDeleteConfirm(item),
+		confirmActionKeyboard("✖️ Удалить", btnDeleteOK, formatLinkContext(id, source, page, sort)),
+	)
 }
 
 func (b *Bot) handleDisableOK(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
-	return b.updateStatus(c, id, source, page, b.service.DisableLink)
+	id, source, page, sort := parseLinkContext(c.Data())
+	return b.updateStatus(c, id, source, page, sort, b.service.DisableLink)
 }
 
 func (b *Bot) handleEnableOK(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
-	return b.updateStatus(c, id, source, page, b.service.EnableLink)
+	id, source, page, sort := parseLinkContext(c.Data())
+	return b.updateStatus(c, id, source, page, sort, b.service.EnableLink)
 }
 
 func (b *Bot) handleDeleteOK(c tele.Context) error {
-	id, source, page := parseLinkContext(c.Data())
+	id, source, page, sort := parseLinkContext(c.Data())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	_, ok, err := b.service.DeleteLink(ctx, id, c.Sender().ID)
 	if err != nil {
 		b.logger.Error("delete link failed", "error", err, "link_id", id, "sender_id", c.Sender().ID)
-		return b.upsert(c, "Не получилось удалить ссылку. Попробуй позже.", listBackKeyboard(source, page))
+		return b.upsert(c, "Не получилось удалить ссылку. Попробуй позже.", listBackKeyboard(source, page, sort))
 	}
 	if !ok {
-		return b.upsert(c, renderNotFound(), listBackKeyboard(source, page))
+		return b.upsert(c, renderNotFound(), listBackKeyboard(source, page, sort))
 	}
 	if source == sourceSearch {
-		return b.handleSearchPage(c)
+		entry, ok := b.states.get(contextKey(c))
+		if !ok || entry.Query == "" {
+			b.states.set(contextKey(c), stateEntry{Kind: stateSearchInput})
+			return b.upsert(c, renderSearchPrompt(), cancelKeyboard())
+		}
+		return b.showSearchPage(c, entry.Query, page, sort)
 	}
-	return b.showLatest(c, page)
+	return b.showLatest(c, page, sort)
 }
 
 func (b *Bot) updateStatus(
@@ -356,6 +375,7 @@ func (b *Bot) updateStatus(
 	id int64,
 	source string,
 	page int,
+	sort app.LinkSort,
 	update func(context.Context, int64, int64) (app.LinkView, bool, error),
 ) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -364,12 +384,12 @@ func (b *Bot) updateStatus(
 	item, ok, err := update(ctx, id, c.Sender().ID)
 	if err != nil {
 		b.logger.Error("update link status failed", "error", err, "link_id", id, "sender_id", c.Sender().ID)
-		return b.upsert(c, "Не получилось изменить ссылку. Попробуй позже.", listBackKeyboard(source, page))
+		return b.upsert(c, "Не получилось изменить ссылку. Попробуй позже.", listBackKeyboard(source, page, sort))
 	}
 	if !ok {
-		return b.upsert(c, renderNotFound(), listBackKeyboard(source, page))
+		return b.upsert(c, renderNotFound(), listBackKeyboard(source, page, sort))
 	}
-	return b.upsert(c, renderDetail(item), detailKeyboard(item, source, page))
+	return b.upsert(c, renderDetail(item), detailKeyboard(item, source, page, sort))
 }
 
 func (b *Bot) handleCSV(c tele.Context) error {
@@ -405,12 +425,12 @@ func (b *Bot) getItemForAction(c tele.Context, id int64) (app.LinkView, bool, er
 	return b.service.GetLink(ctx, id)
 }
 
-func (b *Bot) actionReadError(c tele.Context, err error, source string, page int) error {
+func (b *Bot) actionReadError(c tele.Context, err error, source string, page int, sort app.LinkSort) error {
 	if err != nil {
 		b.logger.Error("read link for action failed", "error", err, "sender_id", c.Sender().ID)
-		return b.upsert(c, "Не получилось открыть ссылку. Попробуй позже.", listBackKeyboard(source, page))
+		return b.upsert(c, "Не получилось открыть ссылку. Попробуй позже.", listBackKeyboard(source, page, sort))
 	}
-	return b.upsert(c, renderNotFound(), listBackKeyboard(source, page))
+	return b.upsert(c, renderNotFound(), listBackKeyboard(source, page, sort))
 }
 
 func (b *Bot) upsert(c tele.Context, text string, markup *tele.ReplyMarkup) error {
@@ -448,9 +468,9 @@ func (b *Bot) upsert(c tele.Context, text string, markup *tele.ReplyMarkup) erro
 	return nil
 }
 
-func listBackKeyboard(source string, page int) *tele.ReplyMarkup {
+func listBackKeyboard(source string, page int, sort app.LinkSort) *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
-	menu.Inline(menu.Row(backToListButton(menu, source, page)))
+	menu.Inline(menu.Row(backToListButton(menu, source, page, sort)))
 	return menu
 }
 
@@ -489,10 +509,28 @@ func parsePage(raw string) int {
 	return page
 }
 
-func parseLinkContext(raw string) (int64, string, int) {
+type listPageContext struct {
+	Page int
+	Sort app.LinkSort
+}
+
+func parseListPage(raw string) listPageContext {
+	parts := strings.Split(strings.TrimSpace(raw), "|")
+	out := listPageContext{Page: 1, Sort: app.LinkSortTime}
+	if len(parts) == 0 || parts[0] == "" {
+		return out
+	}
+	out.Page = parsePage(parts[0])
+	if len(parts) > 1 {
+		out.Sort = app.LinkSort(parts[1]).Normalize()
+	}
+	return out
+}
+
+func parseLinkContext(raw string) (int64, string, int, app.LinkSort) {
 	parts := strings.Split(raw, "|")
-	if len(parts) != 3 {
-		return 0, sourceLatest, 1
+	if len(parts) != 3 && len(parts) != 4 {
+		return 0, sourceLatest, 1, app.LinkSortTime
 	}
 	id, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || id < 1 {
@@ -502,7 +540,11 @@ func parseLinkContext(raw string) (int64, string, int) {
 	if source != sourceSearch {
 		source = sourceLatest
 	}
-	return id, source, parsePage(parts[2])
+	sort := app.LinkSortTime
+	if len(parts) == 4 {
+		sort = app.LinkSort(parts[3]).Normalize()
+	}
+	return id, source, parsePage(parts[2]), sort
 }
 
 func isMessageNotModified(err error) bool {

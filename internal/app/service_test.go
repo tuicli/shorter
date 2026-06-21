@@ -174,12 +174,51 @@ func TestStatusLifecycleAffectsRedirectAndLists(t *testing.T) {
 		t.Fatalf("deleted redirect = %#v", redirect)
 	}
 
-	page, err := service.ListLatestLinks(context.Background(), 1)
+	page, err := service.ListLatestLinks(context.Background(), 1, LinkSortTime)
 	if err != nil {
 		t.Fatalf("ListLatestLinks returned error: %v", err)
 	}
 	if len(page.Links) != 0 {
 		t.Fatalf("latest links = %d, want 0 after delete", len(page.Links))
+	}
+}
+
+func TestListLatestLinksSortsByTitle(t *testing.T) {
+	repo := newFakeRepo()
+	repo.mustInsert(domain.NewShortLink{
+		Code:                "CHARLIE",
+		OriginalURL:         "https://example.com/c",
+		Title:               "Charlie",
+		CreatedByTelegramID: 1,
+	})
+	repo.mustInsert(domain.NewShortLink{
+		Code:                "ALPHA",
+		OriginalURL:         "https://example.com/a",
+		Title:               "Alpha",
+		CreatedByTelegramID: 1,
+	})
+	repo.mustInsert(domain.NewShortLink{
+		Code:                "BETA",
+		OriginalURL:         "https://example.com/b",
+		Title:               "beta",
+		CreatedByTelegramID: 1,
+	})
+	service := NewService(repo, nil, Options{BaseURL: "https://s.example", LinksPageSize: 10})
+
+	page, err := service.ListLatestLinks(context.Background(), 1, LinkSortTitle)
+	if err != nil {
+		t.Fatalf("ListLatestLinks returned error: %v", err)
+	}
+	got := []string{}
+	for _, item := range page.Links {
+		got = append(got, item.Link.Title)
+	}
+	want := []string{"Alpha", "beta", "Charlie"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("titles = %#v, want %#v", got, want)
+	}
+	if page.Sort != LinkSortTitle {
+		t.Fatalf("sort = %q, want %q", page.Sort, LinkSortTitle)
 	}
 }
 
@@ -284,26 +323,20 @@ func (r *fakeRepo) mustInsert(input domain.NewShortLink) domain.ShortLink {
 	return link
 }
 
-func (r *fakeRepo) ListLatest(_ context.Context, page int, limit int) (RepositoryPage, error) {
+func (r *fakeRepo) ListLatest(_ context.Context, options LinkListOptions) (RepositoryPage, error) {
+	options = normalizeFakeListOptions(options)
 	links := make([]domain.ShortLink, 0, len(r.links))
 	for _, link := range r.links {
 		if link.Status != domain.StatusDeleted {
 			links = append(links, link)
 		}
 	}
-	slices.SortFunc(links, func(a domain.ShortLink, b domain.ShortLink) int {
-		if a.CreatedAt.Equal(b.CreatedAt) {
-			return int(b.ID - a.ID)
-		}
-		if a.CreatedAt.After(b.CreatedAt) {
-			return -1
-		}
-		return 1
-	})
-	return pageSlice(links, page, limit), nil
+	sortFakeLinks(links, options.Sort)
+	return pageSlice(links, options.Page, options.Limit), nil
 }
 
-func (r *fakeRepo) Search(_ context.Context, query string, page int, limit int) (RepositoryPage, error) {
+func (r *fakeRepo) Search(_ context.Context, query string, options LinkListOptions) (RepositoryPage, error) {
+	options = normalizeFakeListOptions(options)
 	query = strings.ToLower(query)
 	links := []domain.ShortLink{}
 	for _, link := range r.links {
@@ -315,7 +348,8 @@ func (r *fakeRepo) Search(_ context.Context, query string, page int, limit int) 
 			links = append(links, link)
 		}
 	}
-	return pageSlice(links, page, limit), nil
+	sortFakeLinks(links, options.Sort)
+	return pageSlice(links, options.Page, options.Limit), nil
 }
 
 func (r *fakeRepo) GetByID(_ context.Context, id int64) (domain.ShortLink, bool, error) {
@@ -376,6 +410,51 @@ func (r *fakeRepo) ExportLinks(_ context.Context, limit int) ([]domain.ShortLink
 func (r *fakeRepo) RecordEvent(_ context.Context, event Event) error {
 	r.events = append(r.events, event)
 	return nil
+}
+
+func normalizeFakeListOptions(options LinkListOptions) LinkListOptions {
+	if options.Page < 1 {
+		options.Page = 1
+	}
+	if options.Limit < 1 {
+		options.Limit = 10
+	}
+	options.Sort = options.Sort.Normalize()
+	return options
+}
+
+func sortFakeLinks(links []domain.ShortLink, sort LinkSort) {
+	switch sort.Normalize() {
+	case LinkSortTitle:
+		slices.SortFunc(links, func(a domain.ShortLink, b domain.ShortLink) int {
+			left := strings.ToLower(a.Title)
+			right := strings.ToLower(b.Title)
+			if left == right {
+				return compareIDDesc(a.ID, b.ID)
+			}
+			return strings.Compare(left, right)
+		})
+	default:
+		slices.SortFunc(links, func(a domain.ShortLink, b domain.ShortLink) int {
+			if a.CreatedAt.Equal(b.CreatedAt) {
+				return compareIDDesc(a.ID, b.ID)
+			}
+			if a.CreatedAt.After(b.CreatedAt) {
+				return -1
+			}
+			return 1
+		})
+	}
+}
+
+func compareIDDesc(left int64, right int64) int {
+	if left == right {
+		return 0
+	}
+	if left > right {
+		return -1
+	}
+	return 1
 }
 
 func pageSlice(links []domain.ShortLink, page int, limit int) RepositoryPage {

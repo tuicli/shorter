@@ -33,7 +33,7 @@ func mainMenu() *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
 	menu.Inline(
 		menu.Row(menu.Data("➕ Добавить ссылки", btnAddLinks)),
-		menu.Row(menu.Data("🔎 Найти", btnSearch), menu.Data("🕘 Последние", btnLatest, "1")),
+		menu.Row(menu.Data("🔎 Найти", btnSearch), menu.Data("🕘 Последние", btnLatest, formatListPage(1, app.LinkSortTime))),
 		menu.Row(menu.Data("⬇️ CSV", btnCSV)),
 	)
 	return menu
@@ -60,11 +60,16 @@ func previewKeyboard(hasNew bool) *tele.ReplyMarkup {
 
 func listKeyboard(page app.LinkPage, source string) *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
-	rows := make([]tele.Row, 0, len(page.Links)+2)
+	currentSort := page.Sort.Normalize()
+	rows := make([]tele.Row, 0, len(page.Links)+3)
 	for _, item := range page.Links {
 		rows = append(rows, menu.Row(
-			menu.Data(linkListLabel(item), btnOpen, formatLinkContext(item.Link.ID, source, page.Page)),
+			menu.Data(linkListLabel(item), btnOpen, formatLinkContext(item.Link.ID, source, page.Page, currentSort)),
 		))
+	}
+	pageButton := btnLatest
+	if source == sourceSearch {
+		pageButton = btnSearchPage
 	}
 	if page.TotalPages > 1 {
 		prev := page.Page - 1
@@ -75,14 +80,16 @@ func listKeyboard(page app.LinkPage, source string) *tele.ReplyMarkup {
 		if next > page.TotalPages {
 			next = 1
 		}
-		pageButton := btnLatest
-		if source == sourceSearch {
-			pageButton = btnSearchPage
-		}
 		rows = append(rows, menu.Row(
-			menu.Data("◁", pageButton, strconv.Itoa(prev)),
+			menu.Data("◁", pageButton, formatListPage(prev, currentSort)),
 			menu.Data(strconv.Itoa(page.Page)+"/"+strconv.Itoa(page.TotalPages), btnNoop),
-			menu.Data("▷", pageButton, strconv.Itoa(next)),
+			menu.Data("▷", pageButton, formatListPage(next, currentSort)),
+		))
+	}
+	if len(page.Links) > 0 {
+		rows = append(rows, menu.Row(
+			menu.Data(sortButtonLabel(app.LinkSortTime, currentSort), pageButton, formatListPage(1, app.LinkSortTime)),
+			menu.Data(sortButtonLabel(app.LinkSortTitle, currentSort), pageButton, formatListPage(1, app.LinkSortTitle)),
 		))
 	}
 	rows = append(rows, menu.Row(menu.Data("◀️ Назад", btnBack)))
@@ -90,9 +97,9 @@ func listKeyboard(page app.LinkPage, source string) *tele.ReplyMarkup {
 	return menu
 }
 
-func detailKeyboard(link app.LinkView, source string, page int) *tele.ReplyMarkup {
+func detailKeyboard(link app.LinkView, source string, page int, sort app.LinkSort) *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
-	data := formatLinkContext(link.Link.ID, source, page)
+	data := formatLinkContext(link.Link.ID, source, page, sort)
 	rows := []tele.Row{}
 	switch link.Link.Status {
 	case domain.StatusActive:
@@ -103,7 +110,7 @@ func detailKeyboard(link app.LinkView, source string, page int) *tele.ReplyMarku
 	if link.Link.Status == domain.StatusActive || link.Link.Status == domain.StatusDisabled {
 		rows = append(rows, menu.Row(menu.Data("✖️ Удалить", btnDelete, data)))
 	}
-	rows = append(rows, menu.Row(backToListButton(menu, source, page)))
+	rows = append(rows, menu.Row(backToListButton(menu, source, page, sort)))
 	menu.Inline(rows...)
 	return menu
 }
@@ -117,22 +124,40 @@ func confirmActionKeyboard(action string, okButton string, data string) *tele.Re
 	return menu
 }
 
-func backToListButton(menu *tele.ReplyMarkup, source string, page int) tele.Btn {
+func backToListButton(menu *tele.ReplyMarkup, source string, page int, sort app.LinkSort) tele.Btn {
 	if page < 1 {
 		page = 1
 	}
 	if source == sourceSearch {
-		return menu.Data("◀️ Назад", btnSearchPage, strconv.Itoa(page))
+		return menu.Data("◀️ Назад", btnSearchPage, formatListPage(page, sort))
 	}
-	return menu.Data("◀️ Назад", btnLatest, strconv.Itoa(page))
+	return menu.Data("◀️ Назад", btnLatest, formatListPage(page, sort))
 }
 
-func formatLinkContext(id int64, source string, page int) string {
+func formatListPage(page int, sort app.LinkSort) string {
+	if page < 1 {
+		page = 1
+	}
+	return strconv.Itoa(page) + "|" + string(sort.Normalize())
+}
+
+func formatLinkContext(id int64, source string, page int, sort app.LinkSort) string {
 	if page < 1 {
 		page = 1
 	}
 	if source != sourceSearch {
 		source = sourceLatest
 	}
-	return strconv.FormatInt(id, 10) + "|" + source + "|" + strconv.Itoa(page)
+	return strconv.FormatInt(id, 10) + "|" + source + "|" + strconv.Itoa(page) + "|" + string(sort.Normalize())
+}
+
+func sortButtonLabel(value app.LinkSort, current app.LinkSort) string {
+	label := "Время"
+	if value == app.LinkSortTitle {
+		label = "А-Я"
+	}
+	if value.Normalize() == current.Normalize() {
+		return "✓ " + label
+	}
+	return label
 }

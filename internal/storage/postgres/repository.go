@@ -84,20 +84,22 @@ func (r *Repository) InsertLink(ctx context.Context, input domain.NewShortLink) 
 	return link, nil
 }
 
-func (r *Repository) ListLatest(ctx context.Context, page int, limit int) (app.RepositoryPage, error) {
+func (r *Repository) ListLatest(ctx context.Context, options app.LinkListOptions) (app.RepositoryPage, error) {
 	return r.list(ctx, `
 		WHERE status IN ('active', 'disabled')
-		ORDER BY created_at DESC, id DESC
-	`, []any{}, page, limit)
+	`, []any{}, options)
 }
 
-func (r *Repository) Search(ctx context.Context, query string, page int, limit int) (app.RepositoryPage, error) {
+func (r *Repository) Search(
+	ctx context.Context,
+	query string,
+	options app.LinkListOptions,
+) (app.RepositoryPage, error) {
 	pattern := "%" + escapeLike(query) + "%"
 	return r.list(ctx, `
 		WHERE status IN ('active', 'disabled')
 		  AND (code ILIKE $1 ESCAPE '\' OR title ILIKE $1 ESCAPE '\' OR original_url ILIKE $1 ESCAPE '\')
-		ORDER BY created_at DESC, id DESC
-	`, []any{pattern}, page, limit)
+	`, []any{pattern}, options)
 }
 
 func (r *Repository) GetByID(ctx context.Context, id int64) (domain.ShortLink, bool, error) {
@@ -202,15 +204,21 @@ func (r *Repository) RecordEvent(ctx context.Context, event app.Event) error {
 	return nil
 }
 
-func (r *Repository) list(ctx context.Context, whereOrder string, args []any, page int, limit int) (app.RepositoryPage, error) {
-	countQuery := "SELECT count(*) FROM short_links " + strings.Split(whereOrder, "ORDER BY")[0]
+func (r *Repository) list(
+	ctx context.Context,
+	where string,
+	args []any,
+	options app.LinkListOptions,
+) (app.RepositoryPage, error) {
+	options = normalizeListOptions(options)
+	countQuery := "SELECT count(*) FROM short_links " + where
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return app.RepositoryPage{}, fmt.Errorf("count links: %w", err)
 	}
 
-	offset := (page - 1) * limit
-	queryArgs := append(append([]any{}, args...), limit, offset)
+	offset := (options.Page - 1) * options.Limit
+	queryArgs := append(append([]any{}, args...), options.Limit, offset)
 	limitParam := len(args) + 1
 	offsetParam := len(args) + 2
 	query := fmt.Sprintf(`
@@ -218,8 +226,9 @@ func (r *Repository) list(ctx context.Context, whereOrder string, args []any, pa
 		       disabled_at, disabled_by_telegram_id, deleted_at, deleted_by_telegram_id, created_at, updated_at
 		FROM short_links
 		%s
+		%s
 		LIMIT $%d OFFSET $%d
-	`, whereOrder, limitParam, offsetParam)
+	`, where, orderByForSort(options.Sort), limitParam, offsetParam)
 
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -240,6 +249,26 @@ func (r *Repository) list(ctx context.Context, whereOrder string, args []any, pa
 	}
 
 	return app.RepositoryPage{Links: links, Total: total}, nil
+}
+
+func normalizeListOptions(options app.LinkListOptions) app.LinkListOptions {
+	if options.Page < 1 {
+		options.Page = 1
+	}
+	if options.Limit < 1 {
+		options.Limit = 10
+	}
+	options.Sort = options.Sort.Normalize()
+	return options
+}
+
+func orderByForSort(sort app.LinkSort) string {
+	switch sort.Normalize() {
+	case app.LinkSortTitle:
+		return "ORDER BY lower(title) ASC, id DESC"
+	default:
+		return "ORDER BY created_at DESC, id DESC"
+	}
 }
 
 func (r *Repository) get(ctx context.Context, where string, args ...any) (domain.ShortLink, bool, error) {

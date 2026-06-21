@@ -16,8 +16,8 @@ import (
 type Repository interface {
 	FindByOriginalURLs(ctx context.Context, urls []string) (map[string]domain.ShortLink, error)
 	InsertLink(ctx context.Context, link domain.NewShortLink) (domain.ShortLink, error)
-	ListLatest(ctx context.Context, page int, limit int) (RepositoryPage, error)
-	Search(ctx context.Context, query string, page int, limit int) (RepositoryPage, error)
+	ListLatest(ctx context.Context, options LinkListOptions) (RepositoryPage, error)
+	Search(ctx context.Context, query string, options LinkListOptions) (RepositoryPage, error)
 	GetByID(ctx context.Context, id int64) (domain.ShortLink, bool, error)
 	GetByCode(ctx context.Context, code string) (domain.ShortLink, bool, error)
 	SetStatus(ctx context.Context, id int64, status domain.LinkStatus, adminID int64) (domain.ShortLink, bool, error)
@@ -28,6 +28,28 @@ type Repository interface {
 type RepositoryPage struct {
 	Links []domain.ShortLink
 	Total int
+}
+
+type LinkSort string
+
+const (
+	LinkSortTime  LinkSort = "time"
+	LinkSortTitle LinkSort = "title"
+)
+
+func (s LinkSort) Normalize() LinkSort {
+	switch s {
+	case LinkSortTitle:
+		return LinkSortTitle
+	default:
+		return LinkSortTime
+	}
+}
+
+type LinkListOptions struct {
+	Page  int
+	Limit int
+	Sort  LinkSort
 }
 
 type Event struct {
@@ -281,29 +303,40 @@ type LinkPage struct {
 	Total      int
 	Page       int
 	TotalPages int
+	Sort       LinkSort
 }
 
-func (s *Service) ListLatestLinks(ctx context.Context, page int) (LinkPage, error) {
+func (s *Service) ListLatestLinks(ctx context.Context, page int, sort LinkSort) (LinkPage, error) {
 	page = normalizePage(page)
-	data, err := s.repo.ListLatest(ctx, page, s.linksPageSize)
+	sort = sort.Normalize()
+	data, err := s.repo.ListLatest(ctx, LinkListOptions{
+		Page:  page,
+		Limit: s.linksPageSize,
+		Sort:  sort,
+	})
 	if err != nil {
 		return LinkPage{}, fmt.Errorf("list latest links: %w", err)
 	}
-	return s.toLinkPage(data, page), nil
+	return s.toLinkPage(data, page, sort), nil
 }
 
-func (s *Service) SearchLinks(ctx context.Context, query string, page int) (LinkPage, error) {
+func (s *Service) SearchLinks(ctx context.Context, query string, page int, sort LinkSort) (LinkPage, error) {
 	page = normalizePage(page)
+	sort = sort.Normalize()
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return LinkPage{Links: []LinkView{}, Page: page, TotalPages: 1}, nil
+		return LinkPage{Links: []LinkView{}, Page: page, TotalPages: 1, Sort: sort}, nil
 	}
 
-	data, err := s.repo.Search(ctx, query, page, s.linksPageSize)
+	data, err := s.repo.Search(ctx, query, LinkListOptions{
+		Page:  page,
+		Limit: s.linksPageSize,
+		Sort:  sort,
+	})
 	if err != nil {
 		return LinkPage{}, fmt.Errorf("search links: %w", err)
 	}
-	return s.toLinkPage(data, page), nil
+	return s.toLinkPage(data, page, sort), nil
 }
 
 func (s *Service) GetLink(ctx context.Context, id int64) (LinkView, bool, error) {
@@ -451,7 +484,7 @@ func (s *Service) ShortURL(code string) string {
 	return domain.BuildShortURL(s.baseURL, code)
 }
 
-func (s *Service) toLinkPage(data RepositoryPage, page int) LinkPage {
+func (s *Service) toLinkPage(data RepositoryPage, page int, sort LinkSort) LinkPage {
 	links := make([]LinkView, 0, len(data.Links))
 	for _, link := range data.Links {
 		links = append(links, LinkView{Link: link, ShortURL: s.ShortURL(link.Code)})
@@ -462,6 +495,7 @@ func (s *Service) toLinkPage(data RepositoryPage, page int) LinkPage {
 		Total:      data.Total,
 		Page:       page,
 		TotalPages: totalPages(data.Total, s.linksPageSize),
+		Sort:       sort,
 	}
 }
 
