@@ -62,8 +62,9 @@ func listKeyboard(page app.LinkPage, source string) *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
 	rows := make([]tele.Row, 0, len(page.Links)+2)
 	for _, item := range page.Links {
-		label := domain.CompactTitle(item.Link.Title) + " - " + item.ShortURL
-		rows = append(rows, menu.Row(menu.Data(label, btnOpen, formatLinkContext(item.Link.ID, source, page.Page))))
+		rows = append(rows, menu.Row(
+			menu.Data(linkListLabel(item), btnOpen, formatLinkContext(item.Link.ID, source, page.Page)),
+		))
 	}
 	if page.TotalPages > 1 {
 		prev := page.Page - 1

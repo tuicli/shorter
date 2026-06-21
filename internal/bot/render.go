@@ -126,7 +126,16 @@ func renderList(title string, page app.LinkPage) string {
 	if len(page.Links) == 0 {
 		return title + "\n\nНичего не найдено."
 	}
-	return title + "\n\nВсего: <code>" + strconv.Itoa(page.Total) + "</code>"
+	parts := []string{
+		title,
+		"",
+		"Всего: <code>" + strconv.Itoa(page.Total) + "</code>",
+		"",
+	}
+	for _, item := range page.Links {
+		parts = append(parts, escape(linkListLabel(item)))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func renderDetail(item app.LinkView) string {
@@ -194,6 +203,10 @@ func renderNotFound() string {
 
 func escape(value string) string {
 	return html.EscapeString(value)
+}
+
+func linkListLabel(item app.LinkView) string {
+	return domain.CompactTitle(item.Link.Title) + " - " + item.ShortURL
 }
 
 func shorten(value string, limit int) string {
